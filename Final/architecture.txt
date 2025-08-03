@@ -1,0 +1,31 @@
+┌─────────────────────────────┐
+│    Case Management UI       │
+│  (Attorney Dashboard)       │
+└────────────┬────────────────┘
+             │ HTTP + JSON
+┌────────────▼────────────────┐       ┌─────────────────┐
+│  MCP Server (FastAPI)      │〈──────┤ PostgreSQL      │
+│  • get_case_details        │       │ • cases         │
+│  • get_case_documents      │       │ • parties       │
+│  • get_case_timeline       │       │ • documents     │
+│  • get_financial_summary   │       │ • case_events   │
+│  • search_similar_cases    │       │                 │
+└────────────┬────────────────┘       └─────────────────┘
+             │
+             │ JSON paths to PDF files
+┌────────────▼────────────────┐
+│  RAG Service               │
+│  • PDF ingestion & chunking│
+│  • Legal embeddings         │
+│  • Semantic search via      │
+│    vector DB (Chroma/Weav.) │
+│  • Metadata & citation idx. │
+└────────────┬────────────────┘
+             │ extracted facts + citations
+┌────────────▼────────────────┐
+│  Document Generator        │
+│  • GPT-4 prompt templates  │
+│  • Fills in database +     │
+│    PDF-extracted data      │
+│  • Renders Word/PDF output │
+└─────────────────────────────┘

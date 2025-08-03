@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic
+pdfplumber
+chromadb
+openai
+python-docx
+jinja2
+mcp 
+mseep-mcp-sqlalchemy-server
+

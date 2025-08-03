@@ -1,0 +1,36 @@
+RAG Document Processing Pipeline
+PDF Ingestion
+
+Use pdfplumber to extract text by page.
+
+Store raw text and page-offset metadata in object storage (e.g. S3).
+
+Chunking Strategy
+
+Split text by logical headings, “¶” or double newline, with a max token length (~500 tokens).
+
+Keep page number in chunk metadata for precise citation.
+
+Embedding Creation
+
+Fine-tune or adapter GPT-4 embeddings on legal corpora (contracts, judicial opinions).
+
+Generate embeddings per chunk and upsert into a vector database (Chroma/Pinecone).
+
+Semantic Retrieval
+
+Query vector DB with embedding of user query (e.g. “medical expenses Dr. Jones”).
+
+Retrieve top K chunks from relevant PDF categories (medical, financial, police).
+
+Post-Retrieval Processing
+
+Run lightweight NER/regex over retrieved chunks to extract:
+
+Amounts (regex for $\d+([.,]\d{2})?)
+
+Dates (\d{1,2}\/\d{1,2}\/\d{2,4})
+
+Injury terms (pain, fracture, concussion).
+
+Tag each fact with source file & page.
