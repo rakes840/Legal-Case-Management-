@@ -1,0 +1,43 @@
+Demand-Letter Generation Workflow
+
+Attorney Request
+
+“Generate a demand letter for Case 2024-PI-001. Include all medical expenses, lost wages, and pain and suffering damages. Reference Dr. Jones’s findings and cite the police report for liability.”
+
+Fetch Structured Data (MCP)
+
+GET /cases/2024-PI-001           → client, filed date, status  
+GET /cases/2024-PI-001/parties?type=plaintiff  
+GET /cases/2024-PI-001/parties?type=defendant  
+GET /cases/2024-PI-001/financial-summary  
+Retrieve Unstructured Facts (RAG)
+
+Query “medical expenses Dr. Jones” → extract $12,500 on p. 3
+
+Query “lost wages John Smith” → extract $8,200 over 6 weeks
+
+Query “police fault determination” → policyholder 100% at fault (p. 1)
+
+Synthesize & Template-fill
+
+Re: Demand for ${{total_damages}} – Case {{case_id}}
+
+Dear {{adjuster_name}},
+
+On behalf of our client, John Smith, we demand payment of ${{medical + lost_wages + pain_suffering}} 
+for injuries sustained on {{accident_date}} due to your insured’s negligence.  
+Medical records from Dr. Jones document a diagnosis of {{injury}} and treatment costs totaling 
+${{medical}} (see Dr. Jones, medical_records_dr_jones.pdf, p. 3).  
+Per the police report (police_report_incident_789.pdf, p. 1), liability is 100% on your insured.
+…
+Citation Management
+
+Inline parenthetical citations link to PDF filename + exact page.
+
+Generate a “Citations” appendix with full file paths and upload dates.
+
+Output
+
+Render to .docx via python-docx or .pdf via WeasyPrint.
+
+Store generated letter in the documents table under category demand_letter.

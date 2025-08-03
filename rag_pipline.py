@@ -22,13 +22,36 @@ instantiating the ``DocumentIngestor``.  See the README for details.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-import fitz  # PyMuPDF for PDF processing
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+import os
+import subprocess
+import numpy as np
 from pydantic import BaseModel
+
+try:
+    # Optional: use chromadb if available.  This library provides a
+    # persistent vector store and can speed up similarity search.  If it
+    # isn't installed, we fall back to a simple in‑memory implementation
+    # implemented in this module.
+    import chromadb  # type: ignore
+    from chromadb.config import Settings  # type: ignore
+    from chromadb.utils import embedding_functions  # type: ignore
+    _HAVE_CHROMA = True
+except ImportError:
+    chromadb = None  # type: ignore
+    Settings = None  # type: ignore
+    embedding_functions = None  # type: ignore
+    _HAVE_CHROMA = False
+
+try:
+    import openai  # type: ignore
+except ImportError:
+    # ``openai`` is required to compute embeddings when chromadb isn't
+    # available.  It must be installed by the user.  We don't import it
+    # immediately to allow the rest of the module to be imported without
+    # errors in environments lacking openai.
+    openai = None  # type: ignore
 
 
 class DocumentChunk(BaseModel):
@@ -44,60 +67,75 @@ class DocumentChunk(BaseModel):
 
 class DocumentIngestor:
     """
-    Handles PDF ingestion, chunking, embedding generation, and storage in a
-    vector database (Chroma).
+    Handles PDF ingestion, chunking, embedding generation, and storage.  By
+    default this class stores all embeddings in‑memory and uses the
+    OpenAI API for generating embeddings.  If the optional ``chromadb``
+    package is installed, it will instead create a persistent vector
+    collection and delegate embedding management to Chroma.  When using
+    Chroma the Azure OpenAI embedding function from ``chromadb`` is no
+    longer used—instead embeddings are computed via OpenAI's standard
+    API (see below).
 
-    Each instance of ``DocumentIngestor`` manages its own Chroma client and
-    collection.  When instantiating the class you may specify the name of
-    the collection; by default ``legal_docs`` is used.  If a collection of
-    that name already exists it will be reset, ensuring idempotent runs.
-
-    The embedding function is configured to use Azure OpenAI.  Make sure
-    environment variables are set correctly for ``AZURE_OPENAI_API_KEY`` and
-    ``AZURE_OPENAI_ENDPOINT`` or pass them directly when creating the
-    ``DocumentIngestor``.  You can override the deployment name via the
-    ``embedding_deployment`` parameter.
+    Set the ``OPENAI_API_KEY`` environment variable with your OpenAI API
+    key before instantiating this class.  You can also specify the
+    embedding model via the ``OPENAI_EMBEDDING_MODEL`` environment
+    variable; the default is ``text-embedding-ada-002``.
     """
 
-    def __init__(
-        self,
-        collection_name: str = "legal_docs",
-        embedding_deployment: str | None = None,
-    ) -> None:
-        # Create a Chroma client and reset any existing collection with the
-        # given name.  ``allow_reset`` enables deletion of existing
-        # collections.
-        self.client = chromadb.Client(Settings(allow_reset=True))
-        if collection_name in [c.name for c in self.client.list_collections()]:
-            self.client.delete_collection(collection_name)
-        self.collection = self.client.create_collection(collection_name)
+    def __init__(self, collection_name: str = "legal_docs", embedding_model: str | None = None) -> None:
+        # Determine whether to use Chroma based on availability
+        self.use_chroma = _HAVE_CHROMA
+        self.collection_name = collection_name
+        self.embedding_model = embedding_model or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-ada-002")
 
-        # Configure the embedding function using Azure OpenAI.  If a custom
-        # deployment name is not provided the default for the environment will
-        # be used.
-        deployment_name = embedding_deployment or os.getenv(
-            "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002"
+        # In‑memory storage for document chunks and their embeddings
+        self._chunks: List[Tuple[DocumentChunk, List[float]]] = []
+
+        # Configure OpenAI API key.  Note: we only set ``openai.api_key`` if the
+        # ``openai`` package was imported successfully.  The user must
+        # ensure that the package is installed and the API key is provided.
+        if openai:
+            openai.api_key = os.getenv("OPENAI_API_KEY", "")
+
+        if self.use_chroma:
+            # Initialise Chroma client and collection.  We still manage our own
+            # embeddings but store them in Chroma for efficient search.  If
+            # a collection with the same name exists it will be reset.
+            self.client = chromadb.Client(Settings(allow_reset=True))  # type: ignore
+            if collection_name in [c.name for c in self.client.list_collections()]:  # type: ignore
+                self.client.delete_collection(collection_name)  # type: ignore
+            self.collection = self.client.create_collection(collection_name)  # type: ignore
+
+    def _embed_text(self, text: str) -> List[float]:
+        """Compute an embedding for a single piece of text via OpenAI."""
+        if not openai:
+            raise RuntimeError(
+                "The openai package is required for embedding generation. Please install it and set OPENAI_API_KEY."
+            )
+        response = openai.Embedding.create(input=[text], model=self.embedding_model)  # type: ignore
+        return response["data"][0]["embedding"]  # type: ignore
+
+    def _extract_text_from_pdf(self, file_path: str) -> str:
+        """
+        Extract text from a PDF file using the ``pdftotext`` command‑line
+        utility.  This function reads the entire content of the PDF and
+        returns it as a single string.  If pdftotext is not available the
+        user should install poppler on their system.
+        """
+        result = subprocess.run(
+            ["pdftotext", "-layout", file_path, "-"], capture_output=True, text=True
         )
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
-        self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=api_key,
-            api_base=api_base,
-            api_type="azure",
-            api_version="2023-05-15",
-            deployment_name=deployment_name,
-        )
+        if result.returncode != 0:
+            raise RuntimeError(f"pdftotext failed for {file_path}: {result.stderr}")
+        return result.stdout
 
     def ingest_case_documents(self, case_id: str, docs_dir: str) -> None:
         """
-        Ingest all PDF documents for a given case.
-
-        This method will iterate through every PDF file in ``docs_dir``, extract
-        the text on a page‑by‑page basis, further split the text into
-        paragraph‑level chunks, compute embeddings for each paragraph and
-        upsert the resulting vectors into the Chroma collection.  The ``id``
-        assigned to each chunk encodes the case ID, filename, page number and
-        paragraph index.
+        Ingest all PDF documents for a given case.  This method will iterate
+        through every PDF file in ``docs_dir``, extract the text using
+        ``pdftotext``, split it into paragraph‑level chunks, compute
+        embeddings for each paragraph and either store them in memory or
+        upsert them into a Chroma collection.
 
         Parameters
         ----------
@@ -115,65 +153,77 @@ class DocumentIngestor:
             if not filename.lower().endswith(".pdf"):
                 continue
             file_path = os.path.join(docs_dir, filename)
-            with fitz.open(file_path) as doc:
-                for page_number in range(doc.page_count):
-                    page = doc[page_number]
-                    # Extract text from the page
-                    raw_text = page.get_text().strip()
-                    if not raw_text:
-                        continue
-                    # Chunk the page by paragraphs for better semantic coherence
-                    paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-                    for idx, paragraph in enumerate(paragraphs):
-                        chunk_id = f"{case_id}:{filename}:{page_number + 1}:{idx}"
-                        metadata = {
-                            "case_id": case_id,
-                            "document": filename,
-                            "page": page_number + 1,
-                            "paragraph_index": idx,
-                        }
-                        # Compute embedding for the paragraph
-                        embedding = self.embedding_fn([paragraph])[0]
-                        # Upsert into the collection
-                        self.collection.add(
-                            documents=[paragraph],
-                            metadatas=[metadata],
-                            ids=[chunk_id],
-                            embeddings=[embedding],
-                        )
+            # Extract all text from the PDF
+            full_text = self._extract_text_from_pdf(file_path)
+            # Split by double newlines to approximate paragraphs
+            paragraphs = [p.strip() for p in full_text.split("\n\n") if p.strip()]
+            for idx, paragraph in enumerate(paragraphs):
+                chunk_id = f"{case_id}:{filename}:{idx}"
+                metadata: Dict[str, Any] = {
+                    "case_id": case_id,
+                    "document": filename,
+                    "paragraph_index": idx,
+                }
+                # Compute embedding
+                embedding = self._embed_text(paragraph)
+                chunk = DocumentChunk(
+                    id=chunk_id,
+                    case_id=case_id,
+                    doc_name=filename,
+                    page_number=0,  # page number unavailable via pdftotext
+                    text=paragraph,
+                    metadata=metadata,
+                )
+                if self.use_chroma:
+                    # Upsert into Chroma collection.  Note: Chroma expects lists
+                    self.collection.add(  # type: ignore
+                        documents=[paragraph],
+                        metadatas=[metadata],
+                        ids=[chunk_id],
+                        embeddings=[embedding],
+                    )
+                else:
+                    # Store in memory
+                    self._chunks.append((chunk, embedding))
 
     def query(self, query_text: str, top_k: int = 5) -> List[DocumentChunk]:
         """
         Perform a semantic search over the ingested documents and return
-        ``top_k`` most relevant chunks along with their metadata.
-
-        Parameters
-        ----------
-        query_text: str
-            The natural language query used to find relevant paragraphs.
-        top_k: int
-            How many results to return.  Defaults to 5.
-
-        Returns
-        -------
-        List[DocumentChunk]
-            A list of document chunks sorted by relevance.
+        ``top_k`` most relevant chunks along with their metadata.  When
+        using Chroma the query is delegated to the underlying Chroma
+        collection.  Otherwise an in‑memory similarity search is
+        performed using cosine similarity.
         """
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-        chunks: List[DocumentChunk] = []
-        for doc, metadata in zip(results["documents"][0], results["metadatas"][0]):
-            chunks.append(
-                DocumentChunk(
-                    id=f"{metadata.get('case_id')}:{metadata.get('document')}",
-                    case_id=metadata.get("case_id"),
-                    doc_name=metadata.get("document"),
-                    page_number=metadata.get("page"),
-                    text=doc,
-                    metadata=metadata,
-                )
+        if self.use_chroma:
+            results = self.collection.query(  # type: ignore
+                query_texts=[query_text],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
             )
-        return chunks
+            chunks: List[DocumentChunk] = []
+            for doc, metadata in zip(results["documents"][0], results["metadatas"][0]):
+                chunks.append(
+                    DocumentChunk(
+                        id=f"{metadata.get('case_id')}:{metadata.get('document')}",
+                        case_id=metadata.get("case_id"),
+                        doc_name=metadata.get("document"),
+                        page_number=metadata.get("page", 0),
+                        text=doc,
+                        metadata=metadata,
+                    )
+                )
+            return chunks
+
+        # In‑memory search: compute embedding for the query
+        query_vec = np.array(self._embed_text(query_text))
+        # Compute cosine similarity with each stored embedding
+        scored: List[Tuple[float, DocumentChunk]] = []
+        for chunk, emb in self._chunks:
+            vec = np.array(emb)
+            # Avoid division by zero
+            denom = np.linalg.norm(vec) * np.linalg.norm(query_vec)
+            similarity = float(np.dot(vec, query_vec) / denom) if denom != 0 else 0.0
+            scored.append((similarity, chunk))
+        # Sort by similarity descending and return top_k
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [chunk for _, chunk in scored[:top_k]]

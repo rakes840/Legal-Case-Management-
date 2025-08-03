@@ -28,12 +28,10 @@ Date: 2025-08-02
 import os
 import json
 from typing import List, Optional, Dict, Any
-
 import fitz  # PyMuPDF for PDF processing
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import sqlalchemy
@@ -56,7 +54,7 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLO
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4")
 
 # Directory containing case documents
-CASE_DOCS_DIR = os.environ.get("CASE_DOCS_DIR", "sample_docs/2024-PI-001")
+CASE_DOCS_DIR = os.environ.get("CASE_DOCS_DIR", "documents/sample_docs/2024-PI-001")
 
 
 # Configure OpenAI client

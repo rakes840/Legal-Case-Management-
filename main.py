@@ -59,7 +59,13 @@ from generate_letter import DemandLetterGenerator
 
 # Instantiate database accessor, document ingestor and letter generator
 mcp_db = DBAccessor()
+
+# Initialise the document ingestor.  This version uses OpenAI embeddings
 doc_ingestor = DocumentIngestor()
+
+# The demand letter generator relies on the OpenAI API via the
+# ``OPENAI_API_KEY`` environment variable.  If no API key is provided
+# the generation will fail at runtime.
 demand_gen = DemandLetterGenerator(mcp_db, doc_ingestor)
 
 # Create the FastAPI app
@@ -165,7 +171,7 @@ def run_mcp_server() -> None:
     printed and the program exits.
     """
     try:
-        from mcp.context import ContextProvider
+        from mcp import ContextProvider
         from mcp import MCPServer
         from mcp import tools
     except ImportError:
